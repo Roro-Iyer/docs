@@ -1,0 +1,181 @@
+﻿---
+title: 'Quickstart'
+description: 'Get integrated in under 5 minutes'
+---
+
+This guide walks through a complete integration calling all three endpoints. Use it as a starting point and adapt to your specific use case.
+
+## Prerequisites
+
+Contact us at [rohan.iyer@nozlerouting.com](mailto:rohan.iyer@nozlerouting.com) to request a key. Keys are issued per partner and can be rate-limited or revoked independently.
+
+
+## Complete Example
+
+The example below computes a route from San Francisco to Los Angeles, enriches a single station with route-relative distance information, and computes the optimal fueling plan.
+
+<CodeGroup>
+
+```python Python
+import requests
+
+BASE = 'https://api.nozlerouting.com'
+HEADERS = {'X-API-Key': 'YOUR_API_KEY'}
+
+# 1. Compute a route
+route = requests.post(f'{BASE}/v1/routes', headers=HEADERS, json={
+    'origin': 'San Francisco, CA',
+    'destination': 'Los Angeles, CA',
+}).json()['route']
+
+# 2. Enrich your stations with route-relative positions
+stations = [{
+    'id': 'STATION_001',
+    'name': 'Pilot Lost Hills',
+    'address': '14808 Warren St, Lost Hills, CA',
+    'location': {'lat': 35.6151, 'lng': -119.6588},
+    'price_per_gallon': 4.39,
+    'fuel_type': 'diesel',
+}]
+enriched = requests.post(
+    f'{BASE}/v1/stations/enrich-distances',
+    headers=HEADERS,
+    json={'route': route, 'stations': stations}
+).json()['stations']
+
+# 3. Optimize
+result = requests.post(f'{BASE}/v1/optimize', headers=HEADERS, json={
+    'route': route,
+    'stations': enriched,
+    'vehicle': {
+        'mpg': 6.5,
+        'tank_capacity_gallons': 240.0,
+        'current_fuel_gallons': 30.0,
+    },
+}).json()
+
+print(f"Recommended stops: {len(result['stops'])}")
+print(f"Net cost: ${result['summary']['baseline_comparison']['optimizer_net_fuel_cost']:.2f}")
+```
+
+```javascript JavaScript
+const BASE = 'https://api.nozlerouting.com';
+const HEADERS = {
+  'Content-Type': 'application/json',
+  'X-API-Key': 'YOUR_API_KEY'
+};
+
+// 1. Compute a route
+const routeResponse = await fetch(`${BASE}/v1/routes`, {
+  method: 'POST',
+  headers: HEADERS,
+  body: JSON.stringify({
+    origin: 'San Francisco, CA',
+    destination: 'Los Angeles, CA',
+  }),
+});
+const { route } = await routeResponse.json();
+
+// 2. Enrich stations
+const stations = [{
+  id: 'STATION_001',
+  name: 'Pilot Lost Hills',
+  address: '14808 Warren St, Lost Hills, CA',
+  location: { lat: 35.6151, lng: -119.6588 },
+  price_per_gallon: 4.39,
+  fuel_type: 'diesel',
+}];
+const enrichResponse = await fetch(
+  `${BASE}/v1/stations/enrich-distances`,
+  {
+    method: 'POST',
+    headers: HEADERS,
+    body: JSON.stringify({ route, stations }),
+  }
+);
+const { stations: enriched } = await enrichResponse.json();
+
+// 3. Optimize
+const optimizeResponse = await fetch(`${BASE}/v1/optimize`, {
+  method: 'POST',
+  headers: HEADERS,
+  body: JSON.stringify({
+    route,
+    stations: enriched,
+    vehicle: {
+      mpg: 6.5,
+      tank_capacity_gallons: 240,
+      current_fuel_gallons: 30
+    },
+  }),
+});
+const result = await optimizeResponse.json();
+console.log(`Recommended stops: ${result.stops.length}`);
+```
+
+```bash cURL
+# 1. Compute a route
+curl -X POST https://api.nozlerouting.com/v1/routes \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "origin": "San Francisco, CA",
+    "destination": "Los Angeles, CA"
+  }'
+
+# 2. Enrich stations (use route from step 1)
+curl -X POST https://api.nozlerouting.com/v1/stations/enrich-distances \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "route": { /* from step 1 */ },
+    "stations": [{
+      "id": "STATION_001",
+      "name": "Pilot Lost Hills",
+      "location": {"lat": 35.6151, "lng": -119.6588},
+      "price_per_gallon": 4.39,
+      "fuel_type": "diesel"
+    }]
+  }'
+
+# 3. Optimize
+curl -X POST https://api.nozlerouting.com/v1/optimize \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "route": { /* from step 1 */ },
+    "stations": [ /* enriched from step 2 */ ],
+    "vehicle": {
+      "mpg": 6.5,
+      "tank_capacity_gallons": 240,
+      "current_fuel_gallons": 30
+    }
+  }'
+```
+
+</CodeGroup>
+
+## Response
+
+The `/v1/optimize` response includes:
+
+- `stops` — ordered list of recommended fueling stops with gallons to purchase and cost at each
+- `summary` — total cost, fuel consumed, trip time, and baseline comparison
+- `summary.baseline_comparison` — savings vs. naive 25%-threshold refueling
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Reference" icon="code" href="/api-reference/introduction">
+    Detailed reference for each endpoint
+  </Card>
+  <Card title="Integration Patterns" icon="puzzle-piece" href="/patterns/full-integration">
+    Common integration architectures for different use cases
+  </Card>
+  <Card title="Authentication" icon="key" href="/authentication">
+    Managing API keys and request authentication
+  </Card>
+  <Card title="Try the Demo" icon="play" href="https://demo.nozlerouting.com">
+    See the pipeline in action with synthetic data
+  </Card>
+</CardGroup>

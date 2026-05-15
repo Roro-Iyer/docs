@@ -1,0 +1,168 @@
+---
+title: 'Station Network Integration'
+description: 'For partners with curated station networks and current prices'
+---
+
+The station network pattern is for partners who maintain a station network (a fleet card network, a partner station list, or a proprietary database) and have current prices for those stations, but rely on Nozle for route geometry and distance computations.
+
+You call two endpoints: `/v1/stations/enrich-distances` to compute route-relative positions for your stations, then `/v1/optimize` for the fueling plan.
+
+## Who This Is For
+
+This pattern suits partners with strong station data but no routing infrastructure:
+
+- Fleet card companies (WEX, Comdata, FleetCor, Shell Fleet, ExxonMobil BusinessPro, etc.)
+- Branded fuel network operators (truck stop chains, regional networks)
+- Logistics companies with negotiated station partnerships
+- TMS platforms with curated station lists but no built-in routing
+
+If you can answer "which stations should we consider for this driver?" but need help with the routing math, this is the right pattern.
+
+## Architecture
+
+<Steps>
+  <Step title="Your system selects candidate stations">
+    From your station network, identify stations relevant to the trip. This typically means filtering by geographic region, brand network, fuel card acceptance, or other criteria specific to your business.
+  </Step>
+  <Step title="Your system attaches current prices">
+    Add `price_per_gallon` to each station from your pricing data source (transaction feeds, partnership agreements, or licensed price data).
+  </Step>
+  <Step title="POST /v1/routes (optional)">
+    If you don't have your own routing, call `/v1/routes` to compute the path between origin and destination. Partners with their own routing skip this step.
+  </Step>
+  <Step title="POST /v1/stations/enrich-distances">
+    Send your route and stations to compute `miles_from_route_start` and `detour_minutes` for each station. Stations beyond the configured filters are dropped.
+  </Step>
+  <Step title="POST /v1/optimize">
+    Send the enriched stations to the optimizer. Receive the cost-optimal fueling plan.
+  </Step>
+</Steps>
+
+## Why Partners Bring Their Own Stations
+
+Nozle deliberately doesn't maintain a station database or price feed. Partner-provided station data is almost always more accurate and useful than any third-party feed because:
+
+- **You know your network**: Fleet card companies have negotiated pricing at specific stations. Showing drivers stations outside the network creates a worse experience.
+- **Your prices are current**: Transaction feeds reflect what your customers actually pay, including discounts and rebates. Third-party feeds lag by hours or days.
+- **No licensing constraints**: You don't pay for redundant price data. Coverage is whatever your business covers.
+
+## Example Flow
+
+```python
+import requests
+
+HEADERS = {'X-API-Key': 'YOUR_API_KEY'}
+BASE = 'https://api.nozlerouting.com'
+
+# 1. Compute route (or use your own routing)
+route = requests.post(f'{BASE}/v1/routes',
+    headers=HEADERS,
+    json={'origin': 'Dallas, TX', 'destination': 'Atlanta, GA'}
+).json()['route']
+
+# 2. Your system produces stations with prices
+my_stations = [
+    {
+        'id': 'WEX_45821',
+        'name': 'Pilot Travel Center #234',
+        'address': '1234 Highway Dr, Marshall, TX',
+        'location': {'lat': 32.5449, 'lng': -94.3674},
+        'price_per_gallon': 4.12,  # your current diesel price
+        'fuel_type': 'diesel',
+    },
+    # ... potentially hundreds of stations from your network
+]
+
+# 3. Enrich with route-relative distances
+enriched = requests.post(f'{BASE}/v1/stations/enrich-distances',
+    headers=HEADERS,
+    json={
+        'route': route,
+        'stations': my_stations,
+        'coarse_filter_radius_miles': 7,   # default
+        'max_detour_minutes': 10,           # default
+    }
+).json()['stations']
+
+# 4. Optimize
+result = requests.post(f'{BASE}/v1/optimize',
+    headers=HEADERS,
+    json={
+        'route': route,
+        'stations': enriched,
+        'vehicle': {
+            'mpg': 6.5,
+            'tank_capacity_gallons': 240.0,
+            'current_fuel_gallons': 60.0,
+        },
+    },
+).json()
+
+print(f"Recommended stops at {len(result['stops'])} stations")
+for stop in result['stops']:
+    print(f"  - {stop['station_name']}: {stop['gallons_to_purchase']:.1f} gal @ ${stop['price_per_gallon']:.2f}")
+```
+
+## Filter Tuning
+
+The `/v1/stations/enrich-distances` endpoint takes two filter parameters that affect performance and quality:
+
+- **`coarse_filter_radius_miles`** (default 7): Stations farther than this from the route polyline are dropped without a routing call. Lower values reduce cost but may miss stations that have short detours despite being further from the polyline.
+- **`max_detour_minutes`** (default 10): Stations whose round-trip detour exceeds this threshold are dropped. Lower values produce faster trips but fewer options for the optimizer.
+
+For long-haul trucking, defaults work well. For tight-schedule deliveries, tighter detour thresholds (e.g., 5 minutes) may be appropriate.
+
+## Mapping IDs Back to Your System
+
+A common pattern in this integration is using your internal station IDs throughout. The Nozle API preserves your provided `id` field on each station throughout enrichment and optimization, making it trivial to map results back to your records:
+
+```python
+for stop in result['stops']:
+    station_id = stop['station_id']  # your original ID, unchanged
+    your_station_record = your_db.query(Station).get(station_id)
+    # ... display or process using your internal data
+```
+
+You can also include arbitrary `metadata` on each station that's echoed back in responses, useful for carrying through information your downstream systems need.
+
+## Performance
+
+Two API calls per route. End-to-end latency typically 1-3 seconds depending on station count and route length. Most of the time is spent in `/v1/stations/enrich-distances` because that endpoint makes external routing calls for distance computation; `/v1/optimize` is fast once distances are enriched.
+
+For high-volume use cases, consider caching enriched station results when the underlying route and station set are stable.
+
+## Advantages
+
+<CardGroup cols={2}>
+  <Card title="Use Your Network" icon="network-wired">
+    Recommendations are limited to stations you care about. No external stations cluttering results.
+  </Card>
+  <Card title="Accurate Prices" icon="dollar-sign">
+    Your transaction data is more current and accurate than any third-party price feed.
+  </Card>
+  <Card title="Clean Data Boundaries" icon="shield">
+    You own the station and price data. Nozle owns the algorithm. No licensing entanglement.
+  </Card>
+  <Card title="Flexible Filtering" icon="filter">
+    Tune detour thresholds and search radius to match your customers' priorities.
+  </Card>
+</CardGroup>
+
+## When to Choose a Different Pattern
+
+- You don't have a curated station network → use [Full Integration](/patterns/full-integration) and provide a broader station list
+- You already compute station detour distances in your routing system → use [Optimization-Only](/patterns/optimization-only) and skip `/v1/stations/enrich-distances`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Reference: enrich-distances" icon="route" href="/api-reference/stations-enrich-distances">
+    Detailed parameters and response format
+  </Card>
+  <Card title="API Reference: optimize" icon="bolt" href="/api-reference/optimize">
+    The optimization endpoint reference
+  </Card>
+  <Card title="Try the Demo" icon="play" href="https://demo.nozlerouting.com">
+    Walk through the full pipeline with synthetic data
+  </Card>
+</CardGroup>

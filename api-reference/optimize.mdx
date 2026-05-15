@@ -1,0 +1,35 @@
+---
+title: 'POST /v1/optimize'
+description: 'Compute the cost-optimal fueling plan for a route'
+openapi: 'POST /v1/optimize'
+---
+
+The `/v1/optimize` endpoint is the core of the Nozle API. Given a route, stations with prices, and a vehicle, it returns the cost-optimal sequence of fueling stops along with a baseline comparison showing savings vs. naive refueling.
+
+## Algorithm
+
+The optimizer uses dynamic programming to search for the stop sequence minimizing the objective function:
+
+total_cost = fuel_cost + (time_value_dollars_per_minute × total_detour_minutes)
+
+subject to:
+
+- Tank capacity constraints (can't exceed `tank_capacity_gallons` at any stop)
+- Destination reserve constraint (must arrive with at least `destination_reserve_fraction × tank_capacity_gallons`)
+- Inter-stop buffer constraint (must arrive at each stop with at least `inter_stop_buffer_fraction × tank_capacity_gallons`)
+
+## Baseline Comparison
+
+The response includes a `baseline_comparison` object computing what a naive 25%-threshold refueling strategy would cost on the same route and station set. This provides the savings number partners use to demonstrate value to their customers.
+
+For comparing costs fairly, the baseline uses **net fuel cost** (the dollar value of fuel actually consumed on the trip) rather than pump cost, since naive strategies often refuel to full and end with paid-for fuel in the tank.
+
+## Infeasibility
+
+If the optimizer cannot find a feasible plan with the given inputs, it returns a `422 INFEASIBLE_ROUTE` response with diagnostic details explaining why. Common causes:
+
+- Insufficient `current_fuel_gallons` to reach the first available station
+- Gap between consecutive stations exceeds vehicle range
+- Reserve constraints can't be satisfied with available stations
+
+The `details` field in error responses includes specific diagnostic information to help debug the issue.

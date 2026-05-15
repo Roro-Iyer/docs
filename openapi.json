@@ -1,0 +1,978 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Nozle B2B API",
+    "description": "Fuel-route optimization for fleet operators. Takes a route, your stations with prices, and a vehicle. Returns the cost-optimal stopping sequence with a baseline comparison.\n\n## Data Model\n\n**Nozle is compute-only.** We don't maintain a station database or pricing feed — partners bring their own station data, and we do the routing math. Specifically:\n\n- **You provide:** stations with current prices, a vehicle, and trip endpoints (or a precomputed route).\n- **We provide:** route geometry, distance enrichment for your stations, the optimization algorithm, and a baseline comparison showing what naive refueling would cost.\n\nThis separation matters because (a) you almost certainly have more accurate price data than any third-party feed could provide, and (b) it keeps the API stateless — no syncing, no staleness, no licensing constraints on station coverage.\n\n## Concepts\n\n**Route** — A driving path between two points, expressed as total distance, total duration, and an encoded polyline (Google Polyline Algorithm Format). You can compute one with `/v1/routes` or pass in a route you already have from another provider.\n\n**Station** — A fueling location with coordinates, a price per gallon, and a fuel type. After enrichment, stations also carry `miles_from_route_start` (their position along the route) and `detour_minutes` (time cost to visit them). You bring stations; we annotate them.\n\n**Vehicle** — A fuel-efficiency profile. Either direct specs (`mpg`, `tank_capacity_gallons`, `current_fuel_gallons`) or a year/make/model lookup. Direct specs always win when complete; lookup is a convenience for partners who don't track tank size.\n\n**Optimization** — A dynamic-programming search for the stop sequence that minimizes `(fuel_cost + λ * detour_time)` while respecting tank capacity and a destination fuel reserve. The knob `time_value_dollars_per_minute` controls λ — higher values make the optimizer more time-sensitive (skip cheap-but-distant stations), lower values prioritize cost.\n\n## Authentication\n\nAll endpoints require an `X-API-Key` header. Email `rohan.iyer@nozlerouting.com` to request a key.\n\n## Pipeline\n\nMost partners use the three endpoints in sequence:\n\n1. **`POST /v1/routes`** — compute a driving route between two addresses.\n2. **`POST /v1/stations/enrich-distances`** — annotate your stations with route-relative positions and detour times.\n3. **`POST /v1/optimize`** — compute the optimal fueling plan, with savings vs. naive baseline.\n\nPartners with their own routing can skip step 1 and pass a route directly into steps 2 and 3.\n\n## Quickstart\n\nMinimal Python example calling all three endpoints. Requires `requests`. Replace `YOUR_API_KEY` with the key you received from support.\n\n**[Download the full example](/examples/quickstart.py)** (`curl /examples/quickstart.py \u003E quickstart.py`) for a complete version with error handling, structured-error parsing, and curl equivalents in comments for partners using other languages.\n\n```python\nimport requests\n\nBASE = 'https://api.nozlerouting.com'\nHEADERS = {'X-API-Key': 'YOUR_API_KEY'}\n\n# 1. Compute a route\nroute = requests.post(f'{BASE}/v1/routes', headers=HEADERS, json={\n    'origin': 'San Francisco, CA',\n    'destination': 'Los Angeles, CA',\n}).json()['route']\n\n# 2. Enrich your stations with route-relative positions\nstations = [{\n    'id': 'STATION_001', 'name': 'Pilot Lost Hills',\n    'address': '14808 Warren St, Lost Hills, CA',\n    'location': {'lat': 35.6151, 'lng': -119.6588},\n    'price_per_gallon': 4.39, 'fuel_type': 'diesel',\n}]\nenriched = requests.post(f'{BASE}/v1/stations/enrich-distances',\n    headers=HEADERS, json={'route': route, 'stations': stations}\n).json()['stations']\n\n# 3. Optimize\nresult = requests.post(f'{BASE}/v1/optimize', headers=HEADERS, json={\n    'route': route,\n    'stations': enriched,\n    'vehicle': {\n        'mpg': 6.5,\n        'tank_capacity_gallons': 240.0,\n        'current_fuel_gallons': 30.0,\n    },\n}).json()\n\nprint(f\"Recommended stops: {len(result['stops'])}\")\nprint(f\"Net cost: ${result['summary']['baseline_comparison']['optimizer_net_fuel_cost']:.2f}\")\n```\n\n## Latency\n\nApproximate response times under typical load (single-region, low concurrent traffic):\n\n- **`/v1/routes`** — ~500-900ms (one Google Maps Directions API call dominates).\n- **`/v1/stations/enrich-distances`** — ~300ms-1s for 1-50 stations; scales roughly linearly with station count due to Mapbox matrix sizing.\n- **`/v1/optimize`** — ~500ms-2s. Optimizer runtime depends on station count and trip distance; trips with more stations and longer distance take longer.\n\nThese are estimates, not SLAs. Set client-side timeouts at 10-15 seconds to handle tail latency from upstream providers.\n\n## Errors\n\nAll errors return a canonical shape with `error_code`, `message`, optional `details`, and `request_id` (always set, useful in support requests). Status codes follow standard HTTP semantics: 400 for validation errors, 403 for auth, 422 for infeasibility, 429 for rate limits, 500 for unexpected failures.\n\n## Rate Limits\n\nPer API key: 60/minute on `/v1/routes`, 120/minute on the other two endpoints. Exceeding the limit returns 429 with a `Retry-After` header.\n\n## Versioning\n\nThe `/v1/` URL prefix is stable. Within v1, additive changes (new endpoints, new optional request fields, new response fields) ship without notice. Breaking changes (renamed or removed fields, changed types, changed semantics) ship as a new prefix (`/v2/`) with v1 supported in parallel for a documented deprecation window. Error codes are stable strings — we add to the list but never rename existing ones.",
+    "contact": {
+      "name": "Nozle Support",
+      "email": "rohan.iyer@nozlerouting.com"
+    },
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1/routes": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "summary": "Compute a driving route between two addresses",
+        "description": "Returns the route's geometry, total distance, and total duration in our flat Route shape. Use this when you don't have your own routing infrastructure. If you do, construct Route objects directly and pass them to downstream endpoints — this endpoint exists for convenience, not as a required first step.",
+        "operationId": "post_routes_v1_routes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Route computed successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteResponse"
+                },
+                "example": {
+                  "route": {
+                    "total_distance_miles": 2015.3,
+                    "total_duration_minutes": 1834.2,
+                    "start": {
+                      "lat": 34.0522,
+                      "lng": -118.2437
+                    },
+                    "end": {
+                      "lat": 41.8781,
+                      "lng": -87.6298
+                    },
+                    "polyline": "encoded_polyline_string..."
+                  },
+                  "request_id": "req_abc123def456"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (e.g. empty origin, identical origin and destination, request shape invalid)."
+          },
+          "403": {
+            "description": "Missing or invalid API key."
+          },
+          "404": {
+            "description": "No driving route exists between the given origin and destination."
+          },
+          "429": {
+            "description": "Rate limit exceeded (60 requests/minute per key)."
+          },
+          "500": {
+            "description": "Internal error. Include the request_id when contacting support."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/v1/stations/enrich-distances": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "summary": "Compute route-relative distance and detour time for stations",
+        "description": "Required preparation step before /v1/optimize. Takes a route and a list of stations, returns the same stations augmented with `miles_from_route_start` (how far along the route the station sits) and `detour_minutes` (how much extra driving time the detour adds).\n\nTwo filter stages eliminate stations that wouldn't be useful:\n\n1. **Coordinate pre-filter** drops stations more than `coarse_filter_radius_miles` from the route. Cheap; no API calls. Default 7 miles, range 5-20.\n2. **Detour threshold** drops stations whose round-trip detour exceeds `max_detour_minutes`. Default 10 minutes, range 1-20.\n\nPartner-provided fields (`id`, `price_per_gallon`, `brand`, `metadata`, etc.) are preserved unchanged — only the two computed fields are added.\n\nReturns warnings reporting how many stations were dropped at each stage.",
+        "operationId": "post_enrich_distances_v1_stations_enrich_distances_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrichDistancesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stations enriched. Some may be filtered out; see the warnings field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrichDistancesResponse"
+                },
+                "example": {
+                  "stations": [
+                    {
+                      "id": "partner_xyz_001",
+                      "name": "Pilot Travel Center",
+                      "address": "456 Truck Rd, Flagstaff, AZ",
+                      "location": {
+                        "lat": 35.1983,
+                        "lng": -111.6513
+                      },
+                      "brand": "Pilot",
+                      "price_per_gallon": 4.29,
+                      "fuel_type": "diesel",
+                      "miles_from_route_start": 487.3,
+                      "detour_minutes": 3.2
+                    }
+                  ],
+                  "warnings": [
+                    "5 stations dropped: more than 7.0 miles from the route."
+                  ],
+                  "request_id": "req_def789ghi012"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (empty stations list, radius out of bounds, etc.)."
+          },
+          "403": {
+            "description": "Missing or invalid API key."
+          },
+          "429": {
+            "description": "Rate limit exceeded (120 requests/minute per key)."
+          },
+          "500": {
+            "description": "Distance matrix service failure or unexpected error. Include the request_id when contacting support."
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/v1/optimize": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "summary": "Compute the cost-optimal fueling plan for a route",
+        "description": "The core Nozle endpoint. Takes a route, a list of stations with prices and route-relative positions, and a vehicle. Returns the fuel-cost-optimal sequence of stops along with a baseline comparison showing what a naive strategy would have cost.\n\n**Prerequisites:** all stations must have `price_per_gallon` and `miles_from_route_start` set. Use /v1/stations/enrich-distances to compute distances if you don't have them. Stations must share a single `fuel_type` value (or have it unset) — mixed fuel grades in one request are rejected.\n\n**Vehicle handling:** you can either provide direct specs (`mpg`, `tank_capacity_gallons`, `current_fuel_gallons`) or year/make/model and let us look up the specs. Direct specs are always preferred when available.\n\n**Tuning:** `time_value_dollars_per_minute` controls how the optimizer trades cheaper fuel against longer detours. 0.1 = very cost-sensitive, 0.9 = very time-sensitive, 0.5 (default) = balanced.\n\n**Baseline comparison:** the response includes savings vs. a naive strategy that refuels to full at the next station ahead whenever the tank reaches 25%. This is the dollar value the optimizer is delivering.",
+        "operationId": "post_optimize_v1_optimize_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptimizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Optimal plan computed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptimizeResponse"
+                },
+                "example": {
+                  "stops": [
+                    {
+                      "station_id": "partner_xyz_001",
+                      "station_name": "Pilot",
+                      "station_address": "456 Truck Rd, Flagstaff, AZ",
+                      "miles_from_route_start": 487.3,
+                      "gallons_to_purchase": 247.2,
+                      "price_per_gallon": 4.29,
+                      "total_cost_at_stop": 1060.49,
+                      "detour_minutes": 3.2
+                    }
+                  ],
+                  "summary": {
+                    "total_fuel_cost": 1847.32,
+                    "total_fuel_gallons": 432.1,
+                    "total_time_hours": 31.5,
+                    "total_distance_miles": 2015.3,
+                    "fuel_remaining_at_destination_gallons": 32.4,
+                    "baseline_comparison": {
+                      "strategy_description": "Refuel to full at the next station ahead whenever the tank reaches 25% capacity.",
+                      "naive_total_fuel_cost": 2089.74,
+                      "naive_total_time_hours": 31.8,
+                      "savings_dollars": 242.42,
+                      "savings_percent": 11.6
+                    }
+                  },
+                  "feasible": true,
+                  "warnings": [],
+                  "request_id": "req_jkl345mno678"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error: missing prices or distances on stations, mixed fuel types, vehicle not found, optimizer rejected the input shape."
+          },
+          "403": {
+            "description": "Missing or invalid API key."
+          },
+          "422": {
+            "description": "The route is infeasible under the given vehicle and station constraints. Diagnostic details in the `details` field of the response."
+          },
+          "429": {
+            "description": "Rate limit exceeded (120 requests/minute per key)."
+          },
+          "500": {
+            "description": "Optimizer or vehicle lookup service failed. Include the request_id when contacting support."
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BaselineComparison": {
+        "properties": {
+          "strategy_description": {
+            "type": "string",
+            "title": "Strategy Description"
+          },
+          "naive_total_fuel_cost": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Naive Total Fuel Cost"
+          },
+          "naive_net_fuel_cost": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Naive Net Fuel Cost"
+          },
+          "naive_total_time_hours": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Naive Total Time Hours"
+          },
+          "optimizer_net_fuel_cost": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Optimizer Net Fuel Cost"
+          },
+          "savings_dollars": {
+            "type": "number",
+            "title": "Savings Dollars"
+          },
+          "savings_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings Percent"
+          },
+          "infeasible_baseline": {
+            "type": "boolean",
+            "title": "Infeasible Baseline",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "strategy_description",
+          "naive_total_fuel_cost",
+          "naive_net_fuel_cost",
+          "naive_total_time_hours",
+          "optimizer_net_fuel_cost",
+          "savings_dollars"
+        ],
+        "title": "BaselineComparison",
+        "description": "Comparison of the optimizer's plan against a naive baseline strategy.\n\nThe naive strategy: drive until tank reaches 25%, then refuel to full\nat the next station ahead regardless of price. Repeat until destination.\n\nThe savings figures use **net fuel cost** (dollars paid minus value of\nfuel still in the tank at destination) rather than raw cash-at-pump.\nThis is the apples-to-apples comparison: both strategies are measured\non what they actually cost the trip, not what was spent at the pump\n(which can be misleading because the naive strategy often arrives\nwith a near-full tank that was paid for but unused).\n\nFor trips where the naive strategy can't complete the route, the\n`savings_percent` field is null and `infeasible_baseline` is true —\nthe comparison degenerates because there's no finite naive cost to\ncompare against. In that case `savings_dollars` is set to the\noptimizer's net cost (representing \"the optimizer found a feasible\nplan; naive driving could not\"), but the percent figure is omitted\nrather than reporting a misleading \"100% savings\"."
+      },
+      "Coordinates": {
+        "properties": {
+          "lat": {
+            "type": "number",
+            "maximum": 90,
+            "minimum": -90,
+            "title": "Lat",
+            "description": "Latitude in degrees, -90 to 90."
+          },
+          "lng": {
+            "type": "number",
+            "maximum": 180,
+            "minimum": -180,
+            "title": "Lng",
+            "description": "Longitude in degrees, -180 to 180."
+          }
+        },
+        "type": "object",
+        "required": [
+          "lat",
+          "lng"
+        ],
+        "title": "Coordinates",
+        "description": "WGS84 lat/lng pair."
+      },
+      "EnrichDistancesRequest": {
+        "properties": {
+          "route": {
+            "$ref": "#/components/schemas/Route"
+          },
+          "stations": {
+            "items": {
+              "$ref": "#/components/schemas/Station"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Stations"
+          },
+          "coarse_filter_radius_miles": {
+            "type": "number",
+            "maximum": 20,
+            "minimum": 5,
+            "title": "Coarse Filter Radius Miles",
+            "description": "Stations more than this many miles from the route polyline are dropped before the (expensive) distance matrix call. Bounds protect against runaway matrix costs. Increase for more lenient inclusion if your station coordinates are loose; decrease to cut matrix-call costs.",
+            "default": 7
+          },
+          "max_detour_minutes": {
+            "type": "number",
+            "maximum": 20,
+            "minimum": 1,
+            "title": "Max Detour Minutes",
+            "description": "Stations whose round-trip detour exceeds this many minutes are dropped after the matrix call.",
+            "default": 10
+          }
+        },
+        "type": "object",
+        "required": [
+          "route",
+          "stations"
+        ],
+        "title": "EnrichDistancesRequest"
+      },
+      "EnrichDistancesResponse": {
+        "properties": {
+          "stations": {
+            "items": {
+              "$ref": "#/components/schemas/Station"
+            },
+            "type": "array",
+            "title": "Stations"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stations",
+          "request_id"
+        ],
+        "title": "EnrichDistancesResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "OptimizationParams": {
+        "properties": {
+          "time_value_dollars_per_minute": {
+            "type": "number",
+            "maximum": 0.9,
+            "minimum": 0.1,
+            "title": "Time Value Dollars Per Minute",
+            "description": "How much a minute of detour is worth, in dollars. Lower values favor cheaper stations even with longer detours; higher values favor closer stations even at higher prices. 0.1 = strongly cost-sensitive, 0.9 = strongly time-sensitive.",
+            "default": 0.5
+          },
+          "destination_reserve_fraction": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Destination Reserve Fraction",
+            "description": "Minimum fraction of tank to arrive at destination with. Default 0.10 (10% reserve).",
+            "default": 0.1
+          },
+          "inter_stop_buffer_fraction": {
+            "type": "number",
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Inter Stop Buffer Fraction",
+            "description": "Minimum fraction of tank to maintain between stops. Default 0.05 (5% buffer).",
+            "default": 0.05
+          }
+        },
+        "type": "object",
+        "title": "OptimizationParams"
+      },
+      "OptimizeRequest": {
+        "properties": {
+          "route": {
+            "$ref": "#/components/schemas/Route"
+          },
+          "stations": {
+            "items": {
+              "$ref": "#/components/schemas/Station"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Stations"
+          },
+          "vehicle": {
+            "$ref": "#/components/schemas/Vehicle"
+          },
+          "params": {
+            "$ref": "#/components/schemas/OptimizationParams"
+          }
+        },
+        "type": "object",
+        "required": [
+          "route",
+          "stations",
+          "vehicle"
+        ],
+        "title": "OptimizeRequest"
+      },
+      "OptimizeResponse": {
+        "properties": {
+          "stops": {
+            "items": {
+              "$ref": "#/components/schemas/StopRecommendation"
+            },
+            "type": "array",
+            "title": "Stops"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RouteSummary"
+          },
+          "feasible": {
+            "type": "boolean",
+            "title": "Feasible"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stops",
+          "summary",
+          "feasible",
+          "request_id"
+        ],
+        "title": "OptimizeResponse"
+      },
+      "Route": {
+        "properties": {
+          "total_distance_miles": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "title": "Total Distance Miles",
+            "description": "Total driving distance from start to end, in miles."
+          },
+          "total_duration_minutes": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "title": "Total Duration Minutes",
+            "description": "Total driving time from start to end, in minutes (no stops)."
+          },
+          "start": {
+            "$ref": "#/components/schemas/Coordinates",
+            "description": "Starting coordinates."
+          },
+          "end": {
+            "$ref": "#/components/schemas/Coordinates",
+            "description": "Ending coordinates."
+          },
+          "polyline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Polyline",
+            "description": "Encoded polyline tracing the route. Same format as Google Maps `overview_polyline.points`. Either `polyline` or `waypoints` is required."
+          },
+          "waypoints": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Coordinates"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waypoints",
+            "description": "Explicit list of lat/lng points along the route. Alternative to `polyline` if you don't have an encoded form. Either `polyline` or `waypoints` is required."
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_distance_miles",
+          "total_duration_minutes",
+          "start",
+          "end"
+        ],
+        "title": "Route",
+        "description": "Internal route representation. Flat shape — upstream adapters normalize\nGoogle/Mapbox responses into this before it hits B2B code."
+      },
+      "RouteRequest": {
+        "properties": {
+          "origin": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Origin"
+          },
+          "destination": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Destination"
+          }
+        },
+        "type": "object",
+        "required": [
+          "origin",
+          "destination"
+        ],
+        "title": "RouteRequest"
+      },
+      "RouteResponse": {
+        "properties": {
+          "route": {
+            "$ref": "#/components/schemas/Route"
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "route",
+          "request_id"
+        ],
+        "title": "RouteResponse"
+      },
+      "RouteSummary": {
+        "properties": {
+          "total_fuel_cost": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Total Fuel Cost"
+          },
+          "total_fuel_gallons": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Total Fuel Gallons"
+          },
+          "total_time_hours": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Total Time Hours"
+          },
+          "total_distance_miles": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Total Distance Miles"
+          },
+          "fuel_remaining_at_destination_gallons": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Fuel Remaining At Destination Gallons"
+          },
+          "baseline_comparison": {
+            "$ref": "#/components/schemas/BaselineComparison"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_fuel_cost",
+          "total_fuel_gallons",
+          "total_time_hours",
+          "total_distance_miles",
+          "fuel_remaining_at_destination_gallons",
+          "baseline_comparison"
+        ],
+        "title": "RouteSummary"
+      },
+      "Station": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Id",
+            "description": "Partner-controlled identifier. Treated as opaque — round-trips unchanged through every endpoint. Use whatever lets you match the station back to your records (database key, address string, coordinate hash, etc.)."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "description": "Station name."
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Address",
+            "description": "Street address."
+          },
+          "location": {
+            "$ref": "#/components/schemas/Coordinates",
+            "description": "Station coordinates."
+          },
+          "brand": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand",
+            "description": "Optional brand (e.g. 'Shell', 'Pilot')."
+          },
+          "price_per_gallon": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100,
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Per Gallon",
+            "description": "Current price per gallon. Required for /v1/optimize. Pre-filter to your vehicle's fuel type before sending."
+          },
+          "fuel_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "regular",
+                  "midgrade",
+                  "premium",
+                  "diesel"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fuel Type",
+            "description": "Informational tag. The optimizer treats price_per_gallon as authoritative regardless of fuel_type. All stations in one /v1/optimize request must share this value (if set) — mixed types are rejected to catch integration mistakes."
+          },
+          "miles_from_route_start": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Miles From Route Start",
+            "description": "How far along the route the station sits. Populated by /v1/stations/enrich-distances. Required for /v1/optimize."
+          },
+          "detour_minutes": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detour Minutes",
+            "description": "Round-trip detour time vs. driving past the station. Populated by /v1/stations/enrich-distances."
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Optional partner-defined data passed through every endpoint unchanged. Use it for anything you want to associate with a station (loyalty tier, internal IDs, etc.)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "address",
+          "location"
+        ],
+        "title": "Station",
+        "description": "Represents a gas station as it flows through the v1 pipeline. Fields\naccumulate as the station passes through endpoints:\n\n  enrich-distances:  adds miles_from_route_start, detour_minutes\n  optimize:          consumes all fields\n\nPartner-provided fields (id, name, address, location, brand, prices,\nmetadata) are always preserved round-trip. Enrichment only adds computed\nfields; it never modifies what the partner sent."
+      },
+      "StopRecommendation": {
+        "properties": {
+          "station_id": {
+            "type": "string",
+            "title": "Station Id"
+          },
+          "station_name": {
+            "type": "string",
+            "title": "Station Name"
+          },
+          "station_address": {
+            "type": "string",
+            "title": "Station Address"
+          },
+          "miles_from_route_start": {
+            "type": "number",
+            "title": "Miles From Route Start"
+          },
+          "gallons_to_purchase": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Gallons To Purchase"
+          },
+          "price_per_gallon": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "title": "Price Per Gallon"
+          },
+          "total_cost_at_stop": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Total Cost At Stop"
+          },
+          "detour_minutes": {
+            "type": "number",
+            "minimum": 0,
+            "title": "Detour Minutes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "station_id",
+          "station_name",
+          "station_address",
+          "miles_from_route_start",
+          "gallons_to_purchase",
+          "price_per_gallon",
+          "total_cost_at_stop",
+          "detour_minutes"
+        ],
+        "title": "StopRecommendation"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "Vehicle": {
+        "properties": {
+          "mpg": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 200,
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mpg",
+            "description": "Combined fuel efficiency in miles per gallon."
+          },
+          "tank_capacity_gallons": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 500,
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tank Capacity Gallons",
+            "description": "Tank capacity in gallons."
+          },
+          "current_fuel_gallons": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 500,
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Fuel Gallons",
+            "description": "Current fuel level in gallons. Cannot exceed tank_capacity_gallons."
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2030,
+                "minimum": 1980
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year",
+            "description": "Vehicle year. Used with make and model for spec lookup."
+          },
+          "make": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Make",
+            "description": "Vehicle make (e.g. 'Freightliner')."
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model",
+            "description": "Vehicle model (e.g. 'Cascadia')."
+          }
+        },
+        "type": "object",
+        "title": "Vehicle",
+        "description": "Vehicle parameters for optimization. Accepts either direct specs\n(preferred) or year/make/model for lookup. Direct specs override lookup\nvalues when both are provided."
+      }
+    },
+    "securitySchemes": {
+      "APIKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "v1",
+      "description": "Stable v1 endpoints for fleet partners. These are the only endpoints partners should integrate with."
+    }
+  ]
+}

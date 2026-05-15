@@ -1,0 +1,18 @@
+---
+title: 'POST /v1/routes'
+description: 'Compute a driving route between two addresses'
+openapi: 'POST /v1/routes'
+---
+
+The `/v1/routes` endpoint computes a driving route between two points. It returns route geometry, total distance, and estimated duration.
+
+## When to Use
+
+Use this endpoint when you don't have your own routing infrastructure. Partners with existing routing layers should skip this endpoint and pass their own `Route` object directly to `/v1/stations/enrich-distances` and `/v1/optimize`.
+
+## Notes
+
+- Addresses can be specified as natural language strings (e.g., "Los Angeles, CA") or as "lat,lng" coordinate pairs
+- Routes are computed using driving directions optimized for typical road conditions
+- The returned `polyline` field uses the standard Google Polyline Algorithm Format
+- Maximum route length depends on routing provider — extremely long routes may return an error

@@ -1,0 +1,110 @@
+---
+title: 'Full Integration'
+description: 'Use all three endpoints for the simplest possible integration'
+---
+
+The full integration pattern uses all three Nozle endpoints — routes, enrich-distances, and optimize — for partners who want the simplest possible integration path. You provide trip details, stations with prices, and a vehicle profile. Nozle handles routing, distance computations, and optimization.
+
+## Who This Is For
+
+This pattern suits partners with minimal existing infrastructure:
+
+- Smaller TMS or logistics platforms adding fuel optimization for the first time
+- New fleet products that haven't built routing layers yet
+- Internal tools at logistics companies that need quick integration without infrastructure investment
+- Partners who want to evaluate Nozle's optimization with minimal upfront work, with the option to migrate to other patterns later
+
+If you have your own routing infrastructure or curated station network, consider [Station Network Integration](/patterns/station-network) or [Optimization-Only](/patterns/optimization-only) instead — those patterns give you more control and lower latency.
+
+## Architecture
+
+<Steps>
+  <Step title="Your system provides trip details">
+    Origin and destination addresses, vehicle profile, and a list of candidate stations.
+  </Step>
+  <Step title="POST /v1/routes">
+    Compute the driving route between origin and destination. Returns route geometry, distance, and duration.
+  </Step>
+  <Step title="POST /v1/stations/enrich-distances">
+    Annotate your stations with route-relative positions and detour times. Stations beyond filter thresholds are dropped.
+  </Step>
+  <Step title="POST /v1/optimize">
+    Compute the cost-optimal fueling plan from enriched stations and vehicle parameters. Returns the recommended stop sequence with savings vs. naive baseline.
+  </Step>
+</Steps>
+
+## Data Ownership
+
+Even in full integration, Nozle does not provide fuel prices. You attach `price_per_gallon` to each station before calling `/v1/optimize`.
+
+This boundary exists for two reasons:
+
+1. **Accuracy.** Partner-provided prices reflect what your customers actually pay — including discounts, fleet card rates, and rebates. Third-party feeds lag and don't capture negotiated pricing.
+2. **Licensing.** Nozle remains stateless and avoids the data licensing constraints that would otherwise shape coverage and pricing.
+
+## Sourcing Prices
+
+If your business doesn't already have native pricing data, you'll need a source before this integration is complete. Common options:
+
+- **Commercial price feeds**: OPIS, GasBuddy Business, or similar fuel pricing providers offer licensed API access
+- **State-level averages**: The EIA publishes free state-average gasoline and diesel prices. Useful for rough estimation but lacks station-level granularity
+- **User-contributed prices**: Some consumer-facing apps build their own pricing networks via driver reporting
+
+For B2B integrations, commercial feeds are most common. We're happy to discuss approaches during integration planning — reach out at [rohan.iyer@nozlerouting.com](mailto:rohan.iyer@nozlerouting.com).
+
+## Code Example
+
+See the [Quickstart](/quickstart) for a complete working example that walks through all three endpoints with Python, JavaScript, and cURL.
+
+## Performance
+
+Three sequential API calls per route optimization. Total end-to-end latency typically 2-4 seconds:
+
+- `/v1/routes` — ~500-900ms (Google Maps Directions call)
+- `/v1/stations/enrich-distances` — ~300ms-1s for typical station counts (scales with station count due to Mapbox Matrix calls)
+- `/v1/optimize` — ~500ms-2s depending on station count and route length
+
+Set client-side timeouts at 10-15 seconds to handle upstream tail latency.
+
+## Trade-offs
+
+<CardGroup cols={2}>
+  <Card title="Easiest to Start" icon="rocket">
+    No infrastructure needed beyond your own application. Get to working integration fastest.
+  </Card>
+  <Card title="Highest Latency" icon="clock">
+    Three API calls per route is more than other patterns. Plan for 2-4 second end-to-end response times.
+  </Card>
+  <Card title="Provider Dependency" icon="link">
+    Routes come from Nozle's routing provider. Specialized requirements (toll avoidance, truck-only routing) may require migrating to optimization-only later.
+  </Card>
+  <Card title="Still Need Prices" icon="dollar-sign">
+    Partners without existing price data need to source it before this integration is complete.
+  </Card>
+</CardGroup>
+
+## Migration Path
+
+Many partners start with full integration to validate value quickly, then migrate to other patterns as they build out infrastructure:
+
+- **To station network integration**: When you've curated your own station network with negotiated prices, skip `/v1/routes` (use your own) and call enrich-distances + optimize.
+- **To optimization-only**: When you've built routing and distance computation in your own systems, skip the first two endpoints entirely and only call `/v1/optimize`.
+
+The Nozle API supports any combination of patterns. Migration is incremental and doesn't require breaking changes to your integration.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Complete working code example
+  </Card>
+  <Card title="Try the Demo" icon="play" href="https://demo.nozlerouting.com">
+    See the full pipeline running with synthetic data
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/introduction">
+    Detailed endpoint documentation
+  </Card>
+  <Card title="Contact" icon="envelope" href="mailto:rohan.iyer@nozlerouting.com">
+    Discuss integration planning
+  </Card>
+</CardGroup>

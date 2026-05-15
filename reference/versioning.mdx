@@ -1,0 +1,11 @@
+---
+title: 'Versioning'
+---
+
+The `/v1/` URL prefix is stable. Within v1, additive changes 
+(new endpoints, new optional request fields, new response 
+fields) ship without notice. Breaking changes (renamed or 
+removed fields, changed types, changed semantics) ship as a new 
+prefix (`/v2/`) with v1 supported in parallel for a documented 
+deprecation window. Error codes are stable strings — we add to 
+the list but never rename existing ones.

@@ -1,0 +1,24 @@
+---
+title: 'POST /v1/stations/enrich-distances'
+description: 'Annotate stations with route-relative distance and detour information'
+openapi: 'POST /v1/stations/enrich-distances'
+---
+
+The `/v1/stations/enrich-distances` endpoint takes a route and a list of stations, returning the same stations with `miles_from_route_start` and `detour_minutes` populated for each station that passes the filter thresholds.
+
+## When to Use
+
+Required before `/v1/optimize` if your station data doesn't already include route-relative distances. If you compute these values in your own systems, you can skip this endpoint and pass enriched stations directly to `/v1/optimize`.
+
+## Filters
+
+Two filters control which stations are returned:
+
+- **Coarse radius filter** (`coarse_filter_radius_miles`, default 7): stations farther than this from the route polyline are dropped without matrix routing calls. Reduces cost.
+- **Max detour filter** (`max_detour_minutes`, default 10): stations whose round-trip detour exceeds this threshold are dropped after matrix routing.
+
+## Behavior
+
+- Partner-provided IDs and metadata are preserved unchanged in the response
+- Stations dropped by filters are excluded from the response (not returned with null values)
+- The response includes a count of stations dropped at each filter stage for debugging

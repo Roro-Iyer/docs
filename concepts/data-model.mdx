@@ -1,0 +1,17 @@
+---
+title: 'Data Model'
+---
+
+
+**Nozle is compute-only.** We don't maintain a station database 
+or pricing feed — partners bring their own station data, and we 
+do the routing math. Specifically:
+- **You provide:** stations with current prices, a vehicle, and 
+trip endpoints (or a precomputed route).
+- **We provide:** route geometry, distance enrichment for your 
+stations, the optimization algorithm, and a baseline comparison 
+showing what naive refueling would cost.
+This separation matters because (a) you almost certainly have 
+more accurate price data than any third-party feed could provide, 
+and (b) it keeps the API stateless — no syncing, no staleness, 
+no licensing constraints on station coverage.

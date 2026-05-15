@@ -1,0 +1,119 @@
+---
+title: 'Optimization-Only Integration'
+description: 'For partners with their own routing and station data infrastructure'
+---
+
+The optimization-only pattern is for partners who already have everything except the algorithm itself: route geometry, a curated station network, current prices, and computed distances. You call a single endpoint, `/v1/optimize`, with all the data prepared from your systems.
+
+## Who This Is For
+
+This pattern suits partners with mature infrastructure:
+
+- Fleet management platforms with built-in routing
+- Logistics companies with proprietary route optimization layers
+- Telematics providers who already track vehicle positions and station detours
+- Anyone integrating fuel-cost optimization into an existing routing product
+
+If you have routing, station data, prices, and the ability to compute station detours, this is the simplest possible integration: one API call per route.
+
+## Architecture
+
+<Steps>
+  <Step title="Your system computes the route">
+    Using your existing routing infrastructure, compute the driving route between origin and destination.
+  </Step>
+  <Step title="Your system selects candidate stations">
+    From your station database (fleet card network, partner network, or proprietary list), filter stations near the route.
+  </Step>
+  <Step title="Your system attaches prices and distances">
+    Add current price per gallon to each station from your pricing data source. Compute `miles_from_route_start` and `detour_minutes` for each station using your routing system.
+  </Step>
+  <Step title="POST /v1/optimize">
+    Send the prepared data to the optimizer. Receive the cost-optimal fueling plan.
+  </Step>
+</Steps>
+
+## Data You Provide
+
+For each `/v1/optimize` call, you provide:
+
+- **Route**: total distance, total duration, start/end coordinates, and (optionally) polyline geometry
+- **Stations**: a list of candidates with `id`, `name`, `location`, `price_per_gallon`, `fuel_type`, `miles_from_route_start`, and `detour_minutes`
+- **Vehicle**: either direct specs (`mpg`, `tank_capacity_gallons`, `current_fuel_gallons`) or a year/make/model lookup
+
+## Example Request
+
+```python
+import requests
+
+result = requests.post('https://api.nozlerouting.com/v1/optimize',
+    headers={'X-API-Key': 'YOUR_API_KEY'},
+    json={
+        'route': {
+            'total_distance_miles': 1287.4,
+            'total_duration_minutes': 1124.8,
+            'start': {'lat': 32.7767, 'lng': -96.7970},
+            'end':   {'lat': 33.7490, 'lng': -84.3880},
+        },
+        'stations': [
+            {
+                'id': 'WEX_45821',
+                'name': 'Pilot Travel Center #234',
+                'location': {'lat': 32.9, 'lng': -94.1},
+                'price_per_gallon': 4.12,
+                'fuel_type': 'diesel',
+                'miles_from_route_start': 187.3,
+                'detour_minutes': 2.1,
+            },
+            # ... more stations
+        ],
+        'vehicle': {
+            'mpg': 6.5,
+            'tank_capacity_gallons': 240.0,
+            'current_fuel_gallons': 40.0,
+        },
+    },
+).json()
+
+print(f"Optimal stops: {len(result['stops'])}")
+print(f"Savings: ${result['summary']['baseline_comparison']['savings_dollars']:.2f}")
+```
+
+## Performance
+
+A single `/v1/optimize` call typically completes in 500ms-2s depending on the number of stations and route length. Because you're skipping the routing and enrichment endpoints, end-to-end latency is the lowest of any integration pattern.
+
+## Advantages
+
+<CardGroup cols={2}>
+  <Card title="Minimal Latency" icon="bolt">
+    One API call per route. No round trips for data your systems already have.
+  </Card>
+  <Card title="Full Data Control" icon="lock">
+    Your station network, your prices, your routing — all stay in your stack.
+  </Card>
+  <Card title="Easy to Adopt" icon="puzzle-piece">
+    No need to migrate routing or station data. Slot the optimizer into your existing pipeline.
+  </Card>
+  <Card title="Predictable Costs" icon="chart-line">
+    Lower per-request rate limits aren't an issue when you only call one endpoint.
+  </Card>
+</CardGroup>
+
+## When to Choose a Different Pattern
+
+This pattern assumes you have all the input data ready. Consider another pattern if:
+
+- You don't have routing infrastructure → use [Full Integration](/patterns/full-integration), which includes `/v1/routes`
+- You have station data but not detour distances → use [Station Network Integration](/patterns/station-network), which includes `/v1/stations/enrich-distances`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="API Reference: /v1/optimize" icon="code" href="/api-reference/optimize">
+    Full endpoint reference including all request and response fields
+  </Card>
+  <Card title="Try the Demo" icon="play" href="https://demo.nozlerouting.com">
+    See the optimization endpoint in action with synthetic data
+  </Card>
+</CardGroup>

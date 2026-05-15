@@ -1,0 +1,50 @@
+---
+title: 'Overview'
+description: 'Three composable endpoints for fuel-optimal route planning'
+---
+
+The Nozle Routing API consists of three endpoints designed to be used together or independently:
+
+<CardGroup cols={1}>
+  <Card title="POST /v1/routes" icon="map" href="/api-reference/routes">
+    Compute a driving route between two addresses. Returns route geometry, distance, and duration.
+  </Card>
+  <Card title="POST /v1/stations/enrich-distances" icon="route" href="/api-reference/stations-enrich-distances">
+    Annotate your stations with route-relative positions and detour times.
+  </Card>
+  <Card title="POST /v1/optimize" icon="bolt" href="/api-reference/optimize">
+    Compute the cost-optimal fueling plan for a route, with savings vs. naive baseline.
+  </Card>
+</CardGroup>
+
+## Base URL
+
+https://api.nozlerouting.com
+
+## Common Conventions
+
+All endpoints:
+
+- Accept and return JSON
+- Require `X-API-Key` authentication (see [Authentication](/authentication))
+- Return `request_id` in responses for support and debugging
+- Use structured error responses (see [Errors](/reference/errors))
+- Are subject to rate limits (see [Rate Limits](/reference/rate-limits))
+
+## Pipeline Usage
+
+The three endpoints are typically used in sequence, but partners can skip endpoints when they have the relevant data from other sources:
+
+<Steps>
+  <Step title="Optional: /v1/routes">
+    Skip if you have your own routing layer and can produce a `Route` object directly.
+  </Step>
+  <Step title="Optional: /v1/stations/enrich-distances">
+    Skip if your station data already includes `miles_from_route_start` and `detour_minutes`.
+  </Step>
+  <Step title="Required: /v1/optimize">
+    The core endpoint. Always called.
+  </Step>
+</Steps>
+
+See [Integration Patterns](/patterns/full-integration) for common integration architectures.

@@ -1,0 +1,10 @@
+---
+title: 'Optimization'
+---
+
+A dynamic-programming search for the stop 
+sequence that minimizes `(fuel_cost + λ * detour_time)` while 
+respecting tank capacity and a destination fuel reserve. The 
+knob `time_value_dollars_per_minute` controls λ — higher values 
+make the optimizer more time-sensitive (skip cheap-but-distant 
+stations), lower values prioritize cost.

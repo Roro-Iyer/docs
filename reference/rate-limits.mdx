@@ -1,0 +1,7 @@
+---
+title: 'Rate Limiting'
+---
+
+Per API key: 60/minute on `/v1/routes`, 120/minute on the other 
+two endpoints. Exceeding the limit returns 429 with a 
+`Retry-After` header.

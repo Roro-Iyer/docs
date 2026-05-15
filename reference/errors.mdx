@@ -1,0 +1,9 @@
+---
+title: 'Errors'
+---
+
+All errors return a canonical shape with `error_code`, `message`, 
+optional `details`, and `request_id` (always set, useful in 
+support requests). Status codes follow standard HTTP semantics: 
+400 for validation errors, 403 for auth, 422 for infeasibility, 
+429 for rate limits, 500 for unexpected failures.
